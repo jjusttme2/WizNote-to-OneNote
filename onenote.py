@@ -31,6 +31,8 @@ OAUTH_URL = 'https://login.live.com/oauth20_token.srf'
 
 Document = namedtuple('Document', ['guid', 'title', 'location', 'name', 'url', 'created'])
 
+NOTEBOOK_DICT = {}
+SECTION_DICT = {}
 
 class BearerAuth(AuthBase):
     def __init__(self, token):
@@ -99,8 +101,9 @@ def get_token(session):
     return resp['access_token']
 
 
-def create_notebook(session):
-    name = input('Pleas input new notebook name(such as WizNote, can\'t be empty).\nName: ')
+def create_notebook(session, name):
+    #name = input('Pleas input new notebook name(such as WizNote, can\'t be empty).\nName: ')
+    #print('Creating notebook: "%s"' % name)
     print('Creating notebook: "%s"' % name)
     resp = session.post(API_BASE + '/notebooks', json={'name': name})
     resp.raise_for_status()
@@ -218,6 +221,39 @@ def upload_doc(session, section_id, data_path, doc):
     resp = session.post(API_BASE + '/sections/%s/pages' % section_id, files=data_send)
     resp.raise_for_status()
 
+def get_name(location):
+    size = len(location.split('/')) - 2
+    notebook_name = location.split('/')[1]
+    if size == 1:
+        section_name = notebook_name
+    elif size == 2:
+        section_name = location.split('/')[2]
+    elif size >= 3:
+        section_name = location.split('/')[2] + '-' + location.split('/')[3]
+    
+    return notebook_name, section_name
+
+def get_id(notebook_name, section_name, session):
+
+    if notebook_name in NOTEBOOK_DICT:
+        #if notebook exists, return the notebook id
+        notebook_id = NOTEBOOK_DICT[notebook_name]
+        if section_name in SECTION_DICT:
+        #if section exists ,return the section id
+            section_id = SECTION_DICT[section_name]
+        else:
+        #if section doesn't exists, create the section and add id to SECTION_DICT
+            section_id = create_section(session, notebook_id, section_name)
+            SECTION_DICT[section_name] = section_id
+    else :
+        #if notebook doesn't exists, create the notebook and the section, 
+        #and add them to NOTEBOOK_DICT and SECTION_DICT
+        notebook_id = create_notebook(session, notebook_name)
+        section_id = create_section(session, notebook_id, section_name)
+        NOTEBOOK_DICT[notebook_name] = notebook_id
+        SECTION_DICT[section_name] = section_id
+    
+    return section_id
 
 def main():
     data_dir, docs = get_documents()
@@ -226,12 +262,9 @@ def main():
         token = get_token(session)
         session.auth = BearerAuth(token)
 
-        notebook_id = create_notebook(session)
-
         for location, docs in docs.items():
-            section_name = location.strip('/').replace('/', '-')
-            section_id = create_section(session, notebook_id, section_name)
-
+            notebook_name, section_name = get_name(location)
+            section_id = get_id(notebook_name, section_name, session)
             for doc in docs:
                 upload_doc(session, section_id, data_dir, doc)
 
