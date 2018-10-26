@@ -14,6 +14,7 @@ import requests
 from bs4 import BeautifulSoup
 from requests import HTTPError
 from requests.auth import AuthBase
+import time
 
 CLIENT_ID = 'ddbd41a5-c46d-44f2-85b2-d73bbd7bee7d'
 CLIENT_SECRET = 'qqgu6ApNZyUmvYgna2WBwK5'
@@ -119,7 +120,7 @@ def create_section(session, notebook_id, name):
     return resp.json()['id']
 
 
-def get_documents():
+def get_documents(count):
     data_path, index_path = get_data_dir()
 
     result = OrderedDict()
@@ -132,29 +133,32 @@ def get_documents():
         """.strip()
 
         cur = conn.execute(sql)
+        count_get = 0
         while True:
             row = cur.fetchone()
             if not row:
                 break
+            # The last transferred content is no longer recorded
+            if count_get >= count + 1:
+                guid, title, location, name, url, created, protect, attachment_count = row
 
-            guid, title, location, name, url, created, protect, attachment_count = row
+                if protect:
+                    print('Ignore protected document "%s"' % (location + title))
+                    continue
 
-            if protect:
-                print('Ignore protected document "%s"' % (location + title))
-                continue
+                if attachment_count:
+                    print('Ignore %d attachment(s) in "%s"' % (attachment_count, location + title))
 
-            if attachment_count:
-                print('Ignore %d attachment(s) in "%s"' % (attachment_count, location + title))
+                docs = result.get(location)
+                if not docs:
+                    docs = []
+                    result[location] = docs
 
-            docs = result.get(location)
-            if not docs:
-                docs = []
-                result[location] = docs
-
-            doc = Document(guid, title, location, name, url, created)
-            docs.append(doc)
-
-    return data_path, result
+                doc = Document(guid, title, location, name, url, created)
+                docs.append(doc)
+            count_get = count_get + 1
+    num_total = count_get - count
+    return data_path, result, num_total
 
 
 def clean_html(data, doc):
@@ -253,21 +257,47 @@ def get_id(notebook_name, section_name, session):
         NOTEBOOK_DICT[notebook_name] = notebook_id
         SECTION_DICT[section_name] = section_id
     
-    return section_id
+    return notebook_id, section_id
+
 
 def main():
-    data_dir, docs = get_documents()
-
+    #Read the count.txt file to get the location where the last transfer ended
+    if os.path.exists('count.txt'):
+        with open('count.txt','r') as file:
+            lastTime = file.read()
+        if not lastTime == "":
+            count = int(lastTime.split(',')[0])
+            notebook_name = lastTime.split(',')[1]
+            notebook_id = lastTime.split(',')[2]
+            section_name = lastTime.split(',')[3]
+            section_id = lastTime.split(',')[4]
+            NOTEBOOK_DICT[notebook_name] = notebook_id
+            SECTION_DICT[section_name] = section_id
+        else:
+            count = 0
+    else:
+        count = 0
+    data_dir, docs,num_total = get_documents(count)
     with requests.session() as session:
         token = get_token(session)
         session.auth = BearerAuth(token)
-
+        start_time = time.time()
+        num_finish = 1
+        print('A total of %d notes to be transferred' % num_total)
         for location, docs in docs.items():
             notebook_name, section_name = get_name(location)
-            section_id = get_id(notebook_name, section_name, session)
+            notebook_id, section_id = get_id(notebook_name, section_name, session)
             for doc in docs:
+                # Store the location of this transfer
+                with open('count.txt', 'w') as file:
+                    file.write(str(count) + "," + notebook_name + "," + str(notebook_id) + "," + section_name + "," + str(section_id))
                 upload_doc(session, section_id, data_dir, doc)
-
+                # percentage of finish and time
+                now_time = format(time.time()-start_time, '0.1f')+' s'
+                percentage = format(num_finish/num_total * 100, '0.1f')+ '%'
+                print('%s is finised, take %s' % (percentage, now_time))
+                count = count + 1
+                num_finish += 1
 
 if __name__ == '__main__':
     try:
